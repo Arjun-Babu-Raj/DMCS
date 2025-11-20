@@ -1052,7 +1052,7 @@ if st.session_state.results:
             f"₹ {icer:,.0f}",
             delta=icer_label,
             delta_color="inverse" if icer > 0 else "normal",
-            help="Cost per QALY gained. ₹140,000 = India cost-effectiveness threshold (1× GDP)"
+            help="Cost per QALY gained. ₹140,000 = India cost-effectiveness threshold (1× GDP per capita)"
         )
 
     st.divider()
@@ -1325,6 +1325,7 @@ with st.expander("⚙️ Optimizer Settings", expanded=True):
     
     with col2:
         # Frequency options (using same mapping as main analysis)
+        # Note: Excluding "Twice Yearly" as it's less commonly used for chronic disease screening
         freq_options = ["Annually", "Every 2 Years", "Every 3 Years", "Every 5 Years"]
         selected_freqs = st.multiselect(
             "Screening Frequencies to Test",
@@ -1356,9 +1357,8 @@ if st.button("🚀 Run Price & Frequency Optimizer", type="primary"):
         # Generate cost range
         unit_costs = np.arange(cost_min, cost_max + cost_step, cost_step)
         
-        # Map frequency labels to multipliers
+        # Map frequency labels to multipliers (times per year)
         freq_map = {
-            "Twice Yearly": 2.0,
             "Annually": 1.0,
             "Every 2 Years": 0.5,
             "Every 3 Years": 1/3,
@@ -1420,10 +1420,14 @@ if st.button("🚀 Run Price & Frequency Optimizer", type="primary"):
                 d_cost = res_int['Total_Cost'] - res_cf['Total_Cost']
                 d_qaly = res_int['QALY'] - res_cf['QALY']
                 
+                # ICER interpretation:
+                # - d_qaly > 0, d_cost > 0: Standard case, ICER = cost/benefit
+                # - d_qaly > 0, d_cost < 0: Dominant (saves money and improves health), negative ICER
+                # - d_qaly < 0: Dominated (harms health), ICER = infinity
                 if d_qaly > 0:
-                    icer = d_cost / d_qaly
+                    icer = d_cost / d_qaly  # Can be positive or negative
                 else:
-                    icer = np.inf  # Intervention is dominated (no benefit)
+                    icer = np.inf  # Intervention is dominated (no benefit or causes harm)
                 
                 icer_row.append(icer)
             
@@ -1459,9 +1463,12 @@ if st.session_state.optimizer_results is not None:
     # CREATE HEATMAP VISUALIZATION
     # ==========================================
     
+    # Constants for visualization
+    ICER_DISPLAY_MULTIPLIER = 3  # Cap display at 3× threshold for better color scaling
+    
     # Prepare data for heatmap
-    # Cap ICERs at 3× threshold for better visualization (extremely high values compress color scale)
-    icer_display = np.minimum(icer_matrix, wtp_threshold * 3)
+    # Cap ICERs at threshold multiplier for better visualization (extremely high values compress color scale)
+    icer_display = np.minimum(icer_matrix, wtp_threshold * ICER_DISPLAY_MULTIPLIER)
     
     # Create custom colorscale
     # Green (0) → Yellow (threshold) → Red (3× threshold)
@@ -1584,7 +1591,7 @@ if st.session_state.optimizer_results is not None:
         f"""
         **Optimal Strategy:** {best_freq} screening at ₹{best_cost:.0f} per test
         - **ICER:** ₹{best_icer:,.0f}/QALY
-        - **Status:** {'✅ Highly Cost-Effective' if best_icer < wtp_threshold * 0.5 else '✅ Cost-Effective' if best_icer <= wtp_threshold else '⚠️ Above Threshold'}
+        - **Status:** {'✅ Highly Cost-Effective' if best_icer < wtp_threshold * HIGHLY_CE_MULTIPLIER else '✅ Cost-Effective' if best_icer <= wtp_threshold else '⚠️ Above Threshold'}
         
         **Overall Landscape:**
         - {ce_combinations}/{total_combinations} combinations ({ce_percentage:.0f}%) are cost-effective at ₹{wtp_threshold:,}/QALY threshold

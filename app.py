@@ -1538,33 +1538,57 @@ if st.session_state.optimizer_results is not None:
     insights_data = []
     
     for i, freq in enumerate(freq_labels):
-        # Find maximum cost-effective price
-        ce_costs = unit_costs[icer_matrix[i, :] <= wtp_threshold]
+        # Find maximum cost-effective price (only among finite ICERs)
+        finite_mask = np.isfinite(icer_matrix[i, :])
+        ce_mask = (icer_matrix[i, :] <= wtp_threshold) & finite_mask
+        ce_costs = unit_costs[ce_mask]
         
         if len(ce_costs) > 0:
             max_ce_cost = ce_costs.max()
-            min_icer = icer_matrix[i, :].min()
             
-            # Find the cost that gives minimum ICER
-            optimal_cost_idx = icer_matrix[i, :].argmin()
-            optimal_cost = unit_costs[optimal_cost_idx]
+            # Find the cost that gives minimum finite ICER
+            finite_icers_row = icer_matrix[i, finite_mask]
+            finite_costs_row = unit_costs[finite_mask]
             
-            insights_data.append({
-                "Frequency": freq,
-                "Max Cost-Effective Price (₹)": f"₹{max_ce_cost:.0f}",
-                "Optimal Unit Cost (₹)": f"₹{optimal_cost:.0f}",
-                "Best ICER (₹/QALY)": f"₹{min_icer:,.0f}",
-                "Recommendation": "✅ Cost-Effective" if max_ce_cost >= cost_min else "⚠️ Limited Range"
-            })
+            if len(finite_icers_row) > 0:
+                min_icer_idx = finite_icers_row.argmin()
+                min_icer = finite_icers_row[min_icer_idx]
+                optimal_cost = finite_costs_row[min_icer_idx]
+                
+                # Format ICER display
+                icer_display = f"₹{min_icer:,.0f}" + (" (Dominant)" if min_icer < 0 else "")
+                
+                insights_data.append({
+                    "Frequency": freq,
+                    "Max Cost-Effective Price (₹)": f"₹{max_ce_cost:.0f}",
+                    "Optimal Unit Cost (₹)": f"₹{optimal_cost:.0f}",
+                    "Best ICER (₹/QALY)": icer_display,
+                    "Recommendation": "✅ Cost-Effective" if max_ce_cost >= cost_min else "⚠️ Limited Range"
+                })
+            else:
+                # All ICERs are infinite (dominated)
+                insights_data.append({
+                    "Frequency": freq,
+                    "Max Cost-Effective Price (₹)": "N/A",
+                    "Optimal Unit Cost (₹)": "N/A",
+                    "Best ICER (₹/QALY)": "Dominated (No QALY gain)",
+                    "Recommendation": "❌ Not Viable (No Health Benefit)"
+                })
         else:
             # No cost-effective options in this range
-            min_icer = icer_matrix[i, :].min()
+            finite_icers_row = icer_matrix[i, finite_mask]
+            if len(finite_icers_row) > 0:
+                min_icer = finite_icers_row.min()
+                icer_display = f"₹{min_icer:,.0f}" + (" (Dominant)" if min_icer < 0 else "")
+            else:
+                icer_display = "Dominated (No QALY gain)"
+            
             insights_data.append({
                 "Frequency": freq,
                 "Max Cost-Effective Price (₹)": f"< ₹{cost_min:.0f}",
                 "Optimal Unit Cost (₹)": "N/A",
-                "Best ICER (₹/QALY)": f"₹{min_icer:,.0f}",
-                "Recommendation": "❌ Not Viable (Too Expensive)"
+                "Best ICER (₹/QALY)": icer_display,
+                "Recommendation": "❌ Not Viable (Too Expensive)" if len(finite_icers_row) > 0 else "❌ Not Viable (No Health Benefit)"
             })
     
     df_insights = pd.DataFrame(insights_data)
@@ -1579,50 +1603,86 @@ if st.session_state.optimizer_results is not None:
     
     st.subheader("🎯 Key Findings & Policy Recommendations")
     
-    # Find the most cost-effective combination
-    min_icer_idx = np.unravel_index(icer_matrix.argmin(), icer_matrix.shape)
-    best_freq = freq_labels[min_icer_idx[0]]
-    best_cost = unit_costs[min_icer_idx[1]]
-    best_icer = icer_matrix[min_icer_idx]
+    # Find the most cost-effective combination (excluding dominated interventions)
+    # Filter out infinite ICER values (dominated interventions where d_qaly <= 0)
+    finite_icers = icer_matrix.copy()
+    finite_icers[~np.isfinite(finite_icers)] = np.nan  # Replace inf with NaN for proper handling
     
-    # Count how many combinations are cost-effective
-    total_combinations = icer_matrix.size
-    ce_combinations = np.sum(icer_matrix <= wtp_threshold)
-    ce_percentage = (ce_combinations / total_combinations) * 100
-    
-    st.success(
-        f"""
-        **Optimal Strategy:** {best_freq} screening at ₹{best_cost:.0f} per test
-        - **ICER:** ₹{best_icer:,.0f}/QALY
-        - **Status:** {'✅ Highly Cost-Effective' if best_icer < wtp_threshold * HIGHLY_CE_MULTIPLIER else '✅ Cost-Effective' if best_icer <= wtp_threshold else '⚠️ Above Threshold'}
+    if np.all(np.isnan(finite_icers)):
+        st.error("❌ All simulated combinations are dominated (no QALY gain). Cannot recommend an optimal strategy.")
+    else:
+        min_icer_idx = np.unravel_index(np.nanargmin(finite_icers), finite_icers.shape)
+        best_freq = freq_labels[min_icer_idx[0]]
+        best_cost = unit_costs[min_icer_idx[1]]
+        best_icer = icer_matrix[min_icer_idx]
         
-        **Overall Landscape:**
-        - {ce_combinations}/{total_combinations} combinations ({ce_percentage:.0f}%) are cost-effective at ₹{wtp_threshold:,}/QALY threshold
-        """
-    )
-    
-    # Generate policy recommendations
-    st.markdown("### 💼 Policy Recommendations")
-    
-    # Find "green frontier" - transition points from cost-effective to not cost-effective
-    for i, freq in enumerate(freq_labels):
-        ce_costs = unit_costs[icer_matrix[i, :] <= wtp_threshold]
+        # Count how many combinations are cost-effective (exclude dominated interventions)
+        total_combinations = icer_matrix.size
+        finite_combinations = np.sum(np.isfinite(icer_matrix))
+        dominated_combinations = total_combinations - finite_combinations
+        ce_combinations = np.sum((icer_matrix <= wtp_threshold) & np.isfinite(icer_matrix))
+        ce_percentage = (ce_combinations / total_combinations) * 100
         
-        if len(ce_costs) > 0:
-            max_price = ce_costs.max()
-            st.markdown(
-                f"""
-                **{freq}:**  
-                - ✅ Cost-effective up to ₹{max_price:.0f} per test
-                - 📌 **Action:** Negotiate test prices below ₹{max_price:.0f} to ensure viability
-                - 💡 **Implication:** If market price exceeds ₹{max_price:.0f}, consider reducing frequency or providing subsidies
-                """
-            )
+        # Format ICER display for optimal strategy
+        if best_icer < 0:
+            icer_display = f"₹{best_icer:,.0f}/QALY (Dominant - Saves Money & Improves Health)"
+            status = "✅ Dominant (Best Possible Outcome)"
+        elif best_icer < wtp_threshold * HIGHLY_CE_MULTIPLIER:
+            icer_display = f"₹{best_icer:,.0f}/QALY"
+            status = "✅ Highly Cost-Effective"
+        elif best_icer <= wtp_threshold:
+            icer_display = f"₹{best_icer:,.0f}/QALY"
+            status = "✅ Cost-Effective"
         else:
-            st.markdown(
-                f"""
-                **{freq}:**  
-                - ❌ Not cost-effective in tested range (₹{cost_min:.0f}-₹{cost_max:.0f})
-                - 📌 **Action:** Either negotiate significantly lower prices (< ₹{cost_min:.0f}) or avoid this frequency
-                """
-            )
+            icer_display = f"₹{best_icer:,.0f}/QALY"
+            status = "⚠️ Above Threshold"
+        
+        st.success(
+            f"""
+            **Optimal Strategy:** {best_freq} screening at ₹{best_cost:.0f} per test
+            - **ICER:** {icer_display}
+            - **Status:** {status}
+            
+            **Overall Landscape:**
+            - {ce_combinations}/{total_combinations} combinations ({ce_percentage:.0f}%) are cost-effective at ₹{wtp_threshold:,}/QALY threshold
+            - {finite_combinations}/{total_combinations} combinations have QALY gains (non-dominated)
+            """ + (f"\n- ⚠️ {dominated_combinations} combinations are dominated (no health benefit)" if dominated_combinations > 0 else "")
+        )
+    
+        # Generate policy recommendations
+        st.markdown("### 💼 Policy Recommendations")
+        
+        # Find "green frontier" - transition points from cost-effective to not cost-effective
+        for i, freq in enumerate(freq_labels):
+            # Only consider finite ICERs (non-dominated interventions)
+            finite_mask = np.isfinite(icer_matrix[i, :])
+            ce_mask = (icer_matrix[i, :] <= wtp_threshold) & finite_mask
+            ce_costs = unit_costs[ce_mask]
+            
+            if len(ce_costs) > 0:
+                max_price = ce_costs.max()
+                # Find minimum ICER for this frequency (among finite values)
+                finite_icers_row = icer_matrix[i, finite_mask]
+                if len(finite_icers_row) > 0:
+                    min_icer_row = finite_icers_row.min()
+                    icer_display_row = f"₹{min_icer_row:,.0f}/QALY" + (" (Dominant)" if min_icer_row < 0 else "")
+                else:
+                    icer_display_row = "N/A"
+                
+                st.markdown(
+                    f"""
+                    **{freq}:**  
+                    - ✅ Cost-effective up to ₹{max_price:.0f} per test
+                    - 🎯 Best ICER: {icer_display_row}
+                    - 📌 **Action:** Negotiate test prices below ₹{max_price:.0f} to ensure viability
+                    - 💡 **Implication:** If market price exceeds ₹{max_price:.0f}, consider reducing frequency or providing subsidies
+                    """
+                )
+            else:
+                st.markdown(
+                    f"""
+                    **{freq}:**  
+                    - ❌ Not cost-effective in tested range (₹{cost_min:.0f}-₹{cost_max:.0f})
+                    - 📌 **Action:** Either negotiate significantly lower prices (< ₹{cost_min:.0f}) or avoid this frequency
+                    """
+                )

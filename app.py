@@ -1574,6 +1574,9 @@ if st.session_state.optimizer_results is not None:
     # KEY FINDINGS SUMMARY
     # ==========================================
     
+    # Constants for classification
+    HIGHLY_CE_MULTIPLIER = 0.5  # Threshold for "highly cost-effective" (50% of WTP)
+    
     st.subheader("🎯 Key Findings & Policy Recommendations")
     
     # Find the most cost-effective combination

@@ -1287,3 +1287,332 @@ if st.session_state.psa_results is not None:
         - This indicates {('HIGH' if prob_ce > 0.8 else 'MODERATE' if prob_ce > 0.5 else 'LOW')} confidence in cost-effectiveness
         """
     )
+
+# ==========================================
+# PRICE & FREQUENCY OPTIMIZER (TWO-WAY SENSITIVITY ANALYSIS)
+# ==========================================
+# This section performs a comprehensive grid search to map the cost-effectiveness
+# landscape across different combinations of unit costs and screening frequencies.
+
+st.divider()
+st.header("💡 Price & Frequency Optimizer")
+st.caption("Two-Way Sensitivity Analysis: Find the break-even point where screening becomes cost-effective")
+
+# Initialize session state for optimizer results
+if 'optimizer_results' not in st.session_state:
+    st.session_state.optimizer_results = None
+
+# Expandable section for optimizer controls
+with st.expander("⚙️ Optimizer Settings", expanded=True):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Cost-effectiveness threshold (Willingness-to-Pay)
+        wtp_threshold = st.number_input(
+            "Cost-Effectiveness Threshold (₹/QALY)",
+            value=140000,
+            min_value=50000,
+            max_value=500000,
+            step=10000,
+            help="India standard: ₹140,000 (1× GDP per capita). Adjust based on policy context."
+        )
+        
+        # Unit cost range
+        st.write("**Unit Cost Range (₹)**")
+        cost_min = st.number_input("Minimum", value=10, min_value=0, max_value=1000)
+        cost_max = st.number_input("Maximum", value=500, min_value=10, max_value=2000)
+        cost_step = st.number_input("Step Size", value=20, min_value=5, max_value=100)
+    
+    with col2:
+        # Frequency options (using same mapping as main analysis)
+        freq_options = ["Annually", "Every 2 Years", "Every 3 Years", "Every 5 Years"]
+        selected_freqs = st.multiselect(
+            "Screening Frequencies to Test",
+            freq_options,
+            default=freq_options,
+            help="Select which frequencies to include in the analysis"
+        )
+        
+        st.info(
+            """
+            **How to Interpret Results:**
+            
+            🟢 **Green Zones:** Cost-effective at this threshold  
+            🟡 **Yellow Zones:** Marginal cost-effectiveness  
+            🔴 **Red Zones:** Not cost-effective (too expensive)
+            
+            **Actionable Insights:**
+            - Identify maximum affordable price for each frequency
+            - Find optimal frequency-price combinations
+            - Understand trade-offs between cost and frequency
+            """
+        )
+
+# Run Optimizer Button
+if st.button("🚀 Run Price & Frequency Optimizer", type="primary"):
+    if not selected_freqs:
+        st.error("Please select at least one frequency to analyze.")
+    else:
+        # Generate cost range
+        unit_costs = np.arange(cost_min, cost_max + cost_step, cost_step)
+        
+        # Map frequency labels to multipliers
+        freq_map = {
+            "Twice Yearly": 2.0,
+            "Annually": 1.0,
+            "Every 2 Years": 0.5,
+            "Every 3 Years": 1/3,
+            "Every 5 Years": 0.2
+        }
+        
+        # Initialize results matrix
+        icer_matrix = []
+        freq_labels = []
+        
+        # Progress tracking
+        total_runs = len(selected_freqs) * len(unit_costs)
+        current_run = 0
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Grid search: iterate through all combinations
+        for freq_label in selected_freqs:
+            freq_mult = freq_map[freq_label]
+            icer_row = []
+            
+            for unit_cost in unit_costs:
+                # Update progress
+                current_run += 1
+                progress_bar.progress(current_run / total_runs)
+                status_text.text(f"Running simulation {current_run}/{total_runs}: {freq_label} @ ₹{unit_cost:.0f}...")
+                
+                # Run counterfactual (no screening)
+                res_cf = run_ht_scenario(
+                    BASE_PARAMS,
+                    "None",
+                    0.0,
+                    0.0,
+                    1.0,
+                    0,
+                    0,
+                    0,
+                    cohort_size,
+                    time_horizon,
+                    discount_rate
+                )
+                
+                # Run intervention with current cost/frequency combination
+                res_int = run_ht_scenario(
+                    BASE_PARAMS,
+                    target_disease,
+                    rx_efficacy,
+                    sensitivity,
+                    specificity,
+                    confirm_cost,
+                    unit_cost,
+                    freq_mult,
+                    cohort_size,
+                    time_horizon,
+                    discount_rate
+                )
+                
+                # Calculate ICER
+                d_cost = res_int['Total_Cost'] - res_cf['Total_Cost']
+                d_qaly = res_int['QALY'] - res_cf['QALY']
+                
+                if d_qaly > 0:
+                    icer = d_cost / d_qaly
+                else:
+                    icer = np.inf  # Intervention is dominated (no benefit)
+                
+                icer_row.append(icer)
+            
+            icer_matrix.append(icer_row)
+            freq_labels.append(freq_label)
+        
+        # Clear progress indicators
+        progress_bar.empty()
+        status_text.empty()
+        
+        # Store results in session state
+        st.session_state.optimizer_results = {
+            'icer_matrix': np.array(icer_matrix),
+            'unit_costs': unit_costs,
+            'freq_labels': freq_labels,
+            'wtp_threshold': wtp_threshold,
+            'target': target_disease
+        }
+        
+        st.success(f"✅ Completed {total_runs} simulations!")
+
+# Display optimizer results if available
+if st.session_state.optimizer_results is not None:
+    results = st.session_state.optimizer_results
+    icer_matrix = results['icer_matrix']
+    unit_costs = results['unit_costs']
+    freq_labels = results['freq_labels']
+    wtp_threshold = results['wtp_threshold']
+    
+    st.subheader(f"Results: {results['target']} Screening")
+    
+    # ==========================================
+    # CREATE HEATMAP VISUALIZATION
+    # ==========================================
+    
+    # Prepare data for heatmap
+    # Cap ICERs at 3× threshold for better visualization (extremely high values compress color scale)
+    icer_display = np.minimum(icer_matrix, wtp_threshold * 3)
+    
+    # Create custom colorscale
+    # Green (0) → Yellow (threshold) → Red (3× threshold)
+    colorscale = [
+        [0.0, '#155724'],      # Dark green (dominant/highly cost-effective)
+        [0.33, '#28a745'],     # Green (cost-effective)
+        [0.5, '#ffc107'],      # Yellow (at threshold)
+        [0.67, '#fd7e14'],     # Orange (marginally not cost-effective)
+        [1.0, '#dc3545']       # Red (not cost-effective)
+    ]
+    
+    # Create hover text with formatted ICER values
+    hover_text = []
+    for i, freq in enumerate(freq_labels):
+        row_text = []
+        for j, cost in enumerate(unit_costs):
+            icer_val = icer_matrix[i, j]
+            if np.isinf(icer_val):
+                text = f"Frequency: {freq}<br>Unit Cost: ₹{cost:.0f}<br>ICER: Dominated (No QALY gain)"
+            else:
+                ce_status = "Cost-Effective ✓" if icer_val <= wtp_threshold else "Not Cost-Effective ✗"
+                text = f"Frequency: {freq}<br>Unit Cost: ₹{cost:.0f}<br>ICER: ₹{icer_val:,.0f}/QALY<br>{ce_status}"
+            row_text.append(text)
+        hover_text.append(row_text)
+    
+    # Create heatmap
+    fig = go.Figure(data=go.Heatmap(
+        z=icer_display,
+        x=unit_costs,
+        y=freq_labels,
+        colorscale=colorscale,
+        text=hover_text,
+        hovertemplate='%{text}<extra></extra>',
+        colorbar=dict(
+            title="ICER<br>(₹/QALY)",
+            tickformat=',.0f',
+            len=0.7
+        )
+    ))
+    
+    # Add threshold annotation
+    fig.add_annotation(
+        text=f"Cost-Effectiveness Threshold: ₹{wtp_threshold:,}/QALY",
+        xref="paper", yref="paper",
+        x=0.5, y=1.05,
+        showarrow=False,
+        font=dict(size=12, color="red"),
+        align="center"
+    )
+    
+    fig.update_layout(
+        title="Cost-Effectiveness Landscape: ICER by Unit Cost and Frequency",
+        xaxis_title="Unit Cost per Test (₹)",
+        yaxis_title="Screening Frequency",
+        height=500,
+        font=dict(size=11)
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # ==========================================
+    # ACTIONABLE INSIGHTS TABLE
+    # ==========================================
+    
+    st.subheader("📊 Actionable Insights: Break-Even Analysis")
+    
+    insights_data = []
+    
+    for i, freq in enumerate(freq_labels):
+        # Find maximum cost-effective price
+        ce_costs = unit_costs[icer_matrix[i, :] <= wtp_threshold]
+        
+        if len(ce_costs) > 0:
+            max_ce_cost = ce_costs.max()
+            min_icer = icer_matrix[i, :].min()
+            
+            # Find the cost that gives minimum ICER
+            optimal_cost_idx = icer_matrix[i, :].argmin()
+            optimal_cost = unit_costs[optimal_cost_idx]
+            
+            insights_data.append({
+                "Frequency": freq,
+                "Max Cost-Effective Price (₹)": f"₹{max_ce_cost:.0f}",
+                "Optimal Unit Cost (₹)": f"₹{optimal_cost:.0f}",
+                "Best ICER (₹/QALY)": f"₹{min_icer:,.0f}",
+                "Recommendation": "✅ Cost-Effective" if max_ce_cost >= cost_min else "⚠️ Limited Range"
+            })
+        else:
+            # No cost-effective options in this range
+            min_icer = icer_matrix[i, :].min()
+            insights_data.append({
+                "Frequency": freq,
+                "Max Cost-Effective Price (₹)": f"< ₹{cost_min:.0f}",
+                "Optimal Unit Cost (₹)": "N/A",
+                "Best ICER (₹/QALY)": f"₹{min_icer:,.0f}",
+                "Recommendation": "❌ Not Viable (Too Expensive)"
+            })
+    
+    df_insights = pd.DataFrame(insights_data)
+    st.dataframe(df_insights, use_container_width=True, hide_index=True)
+    
+    # ==========================================
+    # KEY FINDINGS SUMMARY
+    # ==========================================
+    
+    st.subheader("🎯 Key Findings & Policy Recommendations")
+    
+    # Find the most cost-effective combination
+    min_icer_idx = np.unravel_index(icer_matrix.argmin(), icer_matrix.shape)
+    best_freq = freq_labels[min_icer_idx[0]]
+    best_cost = unit_costs[min_icer_idx[1]]
+    best_icer = icer_matrix[min_icer_idx]
+    
+    # Count how many combinations are cost-effective
+    total_combinations = icer_matrix.size
+    ce_combinations = np.sum(icer_matrix <= wtp_threshold)
+    ce_percentage = (ce_combinations / total_combinations) * 100
+    
+    st.success(
+        f"""
+        **Optimal Strategy:** {best_freq} screening at ₹{best_cost:.0f} per test
+        - **ICER:** ₹{best_icer:,.0f}/QALY
+        - **Status:** {'✅ Highly Cost-Effective' if best_icer < wtp_threshold * 0.5 else '✅ Cost-Effective' if best_icer <= wtp_threshold else '⚠️ Above Threshold'}
+        
+        **Overall Landscape:**
+        - {ce_combinations}/{total_combinations} combinations ({ce_percentage:.0f}%) are cost-effective at ₹{wtp_threshold:,}/QALY threshold
+        """
+    )
+    
+    # Generate policy recommendations
+    st.markdown("### 💼 Policy Recommendations")
+    
+    # Find "green frontier" - transition points from cost-effective to not cost-effective
+    for i, freq in enumerate(freq_labels):
+        ce_costs = unit_costs[icer_matrix[i, :] <= wtp_threshold]
+        
+        if len(ce_costs) > 0:
+            max_price = ce_costs.max()
+            st.markdown(
+                f"""
+                **{freq}:**  
+                - ✅ Cost-effective up to ₹{max_price:.0f} per test
+                - 📌 **Action:** Negotiate test prices below ₹{max_price:.0f} to ensure viability
+                - 💡 **Implication:** If market price exceeds ₹{max_price:.0f}, consider reducing frequency or providing subsidies
+                """
+            )
+        else:
+            st.markdown(
+                f"""
+                **{freq}:**  
+                - ❌ Not cost-effective in tested range (₹{cost_min:.0f}-₹{cost_max:.0f})
+                - 📌 **Action:** Either negotiate significantly lower prices (< ₹{cost_min:.0f}) or avoid this frequency
+                """
+            )

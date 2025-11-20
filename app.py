@@ -881,7 +881,7 @@ discount_rate = st.sidebar.slider(
 # ==========================================
 # SENSITIVITY ANALYSIS SECTION (EXPANDABLE)
 # ==========================================
-with st.sidebar.expander("🔎 Sensitivity Analysis"):
+with st.sidebar.expander("Sensitivity Analysis"):
     st.caption("Run a Probabilistic Sensitivity Analysis (PSA) to test model robustness against parameter uncertainty.")
     
     # Variability slider
@@ -1201,7 +1201,7 @@ if st.session_state.results:
 
 if st.session_state.psa_results is not None:
     st.divider()
-    st.subheader("🎲 Probabilistic Sensitivity Analysis")
+    st.subheader("Probabilistic Sensitivity Analysis")
     
     df_psa = st.session_state.psa_results
     
@@ -1295,7 +1295,7 @@ if st.session_state.psa_results is not None:
 # landscape across different combinations of unit costs and screening frequencies.
 
 st.divider()
-st.header("💡 Price & Frequency Optimizer")
+st.header("Price & Frequency Optimizer")
 st.caption("Two-Way Sensitivity Analysis: Find the break-even point where screening becomes cost-effective")
 
 # Initialize session state for optimizer results
@@ -1303,7 +1303,7 @@ if 'optimizer_results' not in st.session_state:
     st.session_state.optimizer_results = None
 
 # Expandable section for optimizer controls
-with st.expander("⚙️ Optimizer Settings", expanded=True):
+with st.expander("Optimizer Settings", expanded=True):
     col1, col2 = st.columns(2)
     
     with col1:
@@ -1350,7 +1350,7 @@ with st.expander("⚙️ Optimizer Settings", expanded=True):
         )
 
 # Run Optimizer Button
-if st.button("🚀 Run Price & Frequency Optimizer", type="primary"):
+if st.button("Run Price & Frequency Optimizer", type="primary"):
     if not selected_freqs:
         st.error("Please select at least one frequency to analyze.")
     else:
@@ -1447,7 +1447,7 @@ if st.button("🚀 Run Price & Frequency Optimizer", type="primary"):
             'target': target_disease
         }
         
-        st.success(f"✅ Completed {total_runs} simulations!")
+        st.success(f"Completed {total_runs} simulations!")
 
 # Display optimizer results if available
 if st.session_state.optimizer_results is not None:
@@ -1533,7 +1533,7 @@ if st.session_state.optimizer_results is not None:
     # ACTIONABLE INSIGHTS TABLE
     # ==========================================
     
-    st.subheader("📊 Actionable Insights: Break-Even Analysis")
+    st.subheader("Actionable Insights: Break-Even Analysis")
     
     insights_data = []
     
@@ -1563,7 +1563,7 @@ if st.session_state.optimizer_results is not None:
                     "Max Cost-Effective Price (₹)": f"₹{max_ce_cost:.0f}",
                     "Optimal Unit Cost (₹)": f"₹{optimal_cost:.0f}",
                     "Best ICER (₹/QALY)": icer_display,
-                    "Recommendation": "✅ Cost-Effective" if max_ce_cost >= cost_min else "⚠️ Limited Range"
+                    "Recommendation": "Cost-Effective" if max_ce_cost >= cost_min else "Limited Range"
                 })
             else:
                 # All ICERs are infinite (dominated)
@@ -1572,7 +1572,7 @@ if st.session_state.optimizer_results is not None:
                     "Max Cost-Effective Price (₹)": "N/A",
                     "Optimal Unit Cost (₹)": "N/A",
                     "Best ICER (₹/QALY)": "Dominated (No QALY gain)",
-                    "Recommendation": "❌ Not Viable (No Health Benefit)"
+                    "Recommendation": "Not Viable (No Health Benefit)"
                 })
         else:
             # No cost-effective options in this range
@@ -1588,7 +1588,7 @@ if st.session_state.optimizer_results is not None:
                 "Max Cost-Effective Price (₹)": f"< ₹{cost_min:.0f}",
                 "Optimal Unit Cost (₹)": "N/A",
                 "Best ICER (₹/QALY)": icer_display,
-                "Recommendation": "❌ Not Viable (Too Expensive)" if len(finite_icers_row) > 0 else "❌ Not Viable (No Health Benefit)"
+                "Recommendation": "Not Viable (Too Expensive)" if len(finite_icers_row) > 0 else "Not Viable (No Health Benefit)"
             })
     
     df_insights = pd.DataFrame(insights_data)
@@ -1609,7 +1609,7 @@ if st.session_state.optimizer_results is not None:
     finite_icers[~np.isfinite(finite_icers)] = np.nan  # Replace inf with NaN for proper handling
     
     if np.all(np.isnan(finite_icers)):
-        st.error("❌ All simulated combinations are dominated (no QALY gain). Cannot recommend an optimal strategy.")
+        st.error("All simulated combinations are dominated (no QALY gain). Cannot recommend an optimal strategy.")
     else:
         min_icer_idx = np.unravel_index(np.nanargmin(finite_icers), finite_icers.shape)
         best_freq = freq_labels[min_icer_idx[0]]
@@ -1626,16 +1626,16 @@ if st.session_state.optimizer_results is not None:
         # Format ICER display for optimal strategy
         if best_icer < 0:
             icer_display = f"₹{best_icer:,.0f}/QALY (Dominant - Saves Money & Improves Health)"
-            status = "✅ Dominant (Best Possible Outcome)"
+            status = "Dominant (Best Possible Outcome)"
         elif best_icer < wtp_threshold * HIGHLY_CE_MULTIPLIER:
             icer_display = f"₹{best_icer:,.0f}/QALY"
-            status = "✅ Highly Cost-Effective"
+            status = "Highly Cost-Effective"
         elif best_icer <= wtp_threshold:
             icer_display = f"₹{best_icer:,.0f}/QALY"
-            status = "✅ Cost-Effective"
+            status = "Cost-Effective"
         else:
             icer_display = f"₹{best_icer:,.0f}/QALY"
-            status = "⚠️ Above Threshold"
+            status = "Above Threshold"
         
         st.success(
             f"""
@@ -1646,11 +1646,11 @@ if st.session_state.optimizer_results is not None:
             **Overall Landscape:**
             - {ce_combinations}/{total_combinations} combinations ({ce_percentage:.0f}%) are cost-effective at ₹{wtp_threshold:,}/QALY threshold
             - {finite_combinations}/{total_combinations} combinations have QALY gains (non-dominated)
-            """ + (f"\n- ⚠️ {dominated_combinations} combinations are dominated (no health benefit)" if dominated_combinations > 0 else "")
+            """ + (f"\n-  {dominated_combinations} combinations are dominated (no health benefit)" if dominated_combinations > 0 else "")
         )
     
         # Generate policy recommendations
-        st.markdown("### 💼 Policy Recommendations")
+        st.markdown("### Policy Recommendations")
         
         # Find "green frontier" - transition points from cost-effective to not cost-effective
         for i, freq in enumerate(freq_labels):
@@ -1672,17 +1672,17 @@ if st.session_state.optimizer_results is not None:
                 st.markdown(
                     f"""
                     **{freq}:**  
-                    - ✅ Cost-effective up to ₹{max_price:.0f} per test
-                    - 🎯 Best ICER: {icer_display_row}
-                    - 📌 **Action:** Negotiate test prices below ₹{max_price:.0f} to ensure viability
-                    - 💡 **Implication:** If market price exceeds ₹{max_price:.0f}, consider reducing frequency or providing subsidies
+                    - Cost-effective up to ₹{max_price:.0f} per test
+                    - Best ICER: {icer_display_row}
+                    -  **Action:** Negotiate test prices below ₹{max_price:.0f} to ensure viability
+                    -  **Implication:** If market price exceeds ₹{max_price:.0f}, consider reducing frequency or providing subsidies
                     """
                 )
             else:
                 st.markdown(
                     f"""
                     **{freq}:**  
-                    - ❌ Not cost-effective in tested range (₹{cost_min:.0f}-₹{cost_max:.0f})
-                    - 📌 **Action:** Either negotiate significantly lower prices (< ₹{cost_min:.0f}) or avoid this frequency
+                    - Not cost-effective in tested range (₹{cost_min:.0f}-₹{cost_max:.0f})
+                    -  **Action:** Either negotiate significantly lower prices (< ₹{cost_min:.0f}) or avoid this frequency
                     """
                 )

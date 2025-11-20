@@ -141,19 +141,21 @@ class MarkovModule:
     - Discount Rate: Future costs and benefits are worth less than present ones
     """
     
-    def __init__(self, params, eff=0.0, horizon=20, discount=0.03, cohort=100000):
+    def __init__(self, params, rx_eff=0.0, sens=0.0, horizon=20, discount=0.03, cohort=100000):
         """
         Initialize the Markov model with simulation parameters.
         
         Args:
             params (dict): Disease-specific parameters (costs, utilities, transition probs)
-            eff (float): Intervention effectiveness (0.0 = no effect, 1.0 = 100% reduction)
+            rx_eff (float): Treatment efficacy (0.0 = no effect, 1.0 = 100% reduction)
+            sens (float): Test sensitivity (0.0 = detects nothing, 1.0 = detects all cases)
             horizon (int): Number of years to simulate
             discount (float): Annual discount rate for economic evaluation (typically 3%)
             cohort (int): Starting population size
         """
         self.params = params              # Store disease parameters
-        self.eff = eff                    # Effectiveness of screening intervention
+        self.rx_eff = rx_eff              # Treatment efficacy
+        self.sens = sens                  # Test sensitivity
         self.horizon = horizon            # Time horizon in years
         self.discount = discount          # Discount rate (3% standard for India HTA)
         self.cohort = cohort              # Starting cohort size
@@ -240,7 +242,10 @@ class ModRetinopathy(MarkovModule):
         
         # Extract parameters
         p = self.params['retino_trans']  # Transition probabilities
-        rr = 1.0 - self.eff              # Risk ratio (effectiveness reduces risk)
+        # Calculate risk ratio using weighted average:
+        # rr = (sensitivity * (1 - rx_eff)) + ((1 - sensitivity) * 1.0)
+        # This represents: detected cases get treatment benefit, undetected cases get no benefit
+        rr = (self.sens * (1 - self.rx_eff)) + ((1 - self.sens) * 1.0)
         p_dev = 0.02                     # Annual risk of developing NPDR from No DR (2%)
         p_d = 0.015                      # Background mortality (1.5% per year)
         
@@ -318,7 +323,9 @@ class ModNephropathy(MarkovModule):
         trace[0, 0] = self.cohort  # Everyone starts healthy
         
         p = self.params['nephro_trans']
-        rr = 1.0 - self.eff  # Risk reduction from screening
+        # Calculate risk ratio using weighted average:
+        # rr = (sensitivity * (1 - rx_eff)) + ((1 - sensitivity) * 1.0)
+        rr = (self.sens * (1 - self.rx_eff)) + ((1 - self.sens) * 1.0)
         p_d = 0.015           # Background mortality
         
         # Build Transition Matrix
@@ -386,7 +393,9 @@ class ModFoot(MarkovModule):
         trace[0, 0] = self.cohort
         
         p = self.params['foot_trans']
-        rr = 1.0 - self.eff  # Risk reduction from screening
+        # Calculate risk ratio using weighted average:
+        # rr = (sensitivity * (1 - rx_eff)) + ((1 - sensitivity) * 1.0)
+        rr = (self.sens * (1 - self.rx_eff)) + ((1 - self.sens) * 1.0)
         p_d = 0.015           # Background mortality
         
         # Build Transition Matrix
@@ -456,7 +465,10 @@ class ModStroke(MarkovModule):
         trace[0, 0] = self.cohort
         
         p = self.params['stroke_trans']
-        rr = 1.0 - (self.eff * 0.5)  # Only 50% effectiveness for stroke prevention
+        # Apply 50% efficacy factor to treatment, then calculate weighted risk ratio
+        rr_treated = 1.0 - (self.rx_eff * 0.5)  # Reduced treatment effect for stroke
+        # Calculate weighted rr: detected cases get reduced benefit, undetected get none
+        rr = (self.sens * rr_treated) + ((1 - self.sens) * 1.0)
         p_event = p['risk'] * rr      # Annual stroke risk (0.27% reduced by screening)
         p_d_bg = 0.015                 # Background mortality
         
@@ -518,7 +530,10 @@ class ModCHD(MarkovModule):
         trace[0, 0] = self.cohort
         
         p = self.params['chd_trans']
-        rr = 1.0 - (self.eff * 0.5)  # 50% effectiveness for MI prevention
+        # Apply 50% efficacy factor to treatment, then calculate weighted risk ratio
+        rr_treated = 1.0 - (self.rx_eff * 0.5)  # Reduced treatment effect for CHD
+        # Calculate weighted rr: detected cases get reduced benefit, undetected get none
+        rr = (self.sens * rr_treated) + ((1 - self.sens) * 1.0)
         p_event = p['risk'] * rr      # Annual MI risk (1.1% reduced by screening)
         p_d_bg = 0.015                 # Background mortality
         
@@ -604,7 +619,7 @@ def perturb_dict(d, variability=0.2):
         new_d[k] = new_sub_d
     return new_d
 
-def run_ht_scenario(params_in, target, eff_val, unit_cost, f_mult, cohort_s, horizon, disc):
+def run_ht_scenario(params_in, target, rx_eff_val, sens_val, spec_val, confirm_cost_val, unit_cost, f_mult, cohort_s, horizon, disc):
     """
     Master function to run the complete Health Technology Assessment (HTA) model.
     
@@ -614,7 +629,10 @@ def run_ht_scenario(params_in, target, eff_val, unit_cost, f_mult, cohort_s, hor
     Args:
         params_in (dict): Parameter dictionary (BASE_PARAMS or perturbed version)
         target (str): Which complication to screen for (e.g., "Retinopathy", "All")
-        eff_val (float): Intervention effectiveness (0.0 to 1.0)
+        rx_eff_val (float): Treatment efficacy (0.0 to 1.0)
+        sens_val (float): Test sensitivity (0.0 to 1.0)
+        spec_val (float): Test specificity (0.0 to 1.0)
+        confirm_cost_val (float): Cost of confirmatory test for false positives (₹)
         unit_cost (float): Cost per screening test (₹)
         f_mult (float): Frequency multiplier (1.0=annual, 2.0=twice yearly, etc.)
         cohort_s (int): Cohort size
@@ -635,25 +653,31 @@ def run_ht_scenario(params_in, target, eff_val, unit_cost, f_mult, cohort_s, hor
     # STEP 1: Determine which modules get intervention effectiveness
     # Logic: Apply effectiveness ONLY to the targeted disease(s)
     e_ret, e_neph, e_foot, e_str, e_chd = 0.0, 0.0, 0.0, 0.0, 0.0
+    s_ret, s_neph, s_foot, s_str, s_chd = 0.0, 0.0, 0.0, 0.0, 0.0
     
     if target == "Retinopathy" or target == "Population Screening (All)":
-        e_ret = eff_val
+        e_ret = rx_eff_val
+        s_ret = sens_val
     if target == "Nephropathy" or target == "Population Screening (All)":
-        e_neph = eff_val
+        e_neph = rx_eff_val
+        s_neph = sens_val
     if target == "Foot Ulcer" or target == "Population Screening (All)":
-        e_foot = eff_val
+        e_foot = rx_eff_val
+        s_foot = sens_val
     if target == "Stroke" or target == "Population Screening (All)":
-        e_str = eff_val
+        e_str = rx_eff_val
+        s_str = sens_val
     if target == "CHD" or target == "Population Screening (All)":
-        e_chd = eff_val
+        e_chd = rx_eff_val
+        s_chd = sens_val
     
     # STEP 2: Initialize all 5 disease modules
     mods = [
-        ModRetinopathy(params_in, e_ret, horizon, disc, cohort_s),
-        ModNephropathy(params_in, e_neph, horizon, disc, cohort_s),
-        ModFoot(params_in, e_foot, horizon, disc, cohort_s),
-        ModStroke(params_in, e_str, horizon, disc, cohort_s),
-        ModCHD(params_in, e_chd, horizon, disc, cohort_s)
+        ModRetinopathy(params_in, e_ret, s_ret, horizon, disc, cohort_s),
+        ModNephropathy(params_in, e_neph, s_neph, horizon, disc, cohort_s),
+        ModFoot(params_in, e_foot, s_foot, horizon, disc, cohort_s),
+        ModStroke(params_in, e_str, s_str, horizon, disc, cohort_s),
+        ModCHD(params_in, e_chd, s_chd, horizon, disc, cohort_s)
     ]
     
     # STEP 3: Initialize accumulators
@@ -703,6 +727,15 @@ def run_ht_scenario(params_in, target, eff_val, unit_cost, f_mult, cohort_s, hor
             # Example: 100,000 people × ₹50/test × 2/year × 0.97 (discount) = ₹9.7M
             annual_screen_costs = m.screenable_population * (unit_cost * f_mult) * disc_arr
             total_screen_cost += np.sum(annual_screen_costs)
+            
+            # STEP 5a: Calculate False Positive Costs
+            # False positives occur when test incorrectly identifies healthy people as having disease
+            # False positive rate = 1 - specificity
+            # Column 0 of trace is the healthy/susceptible state for each module
+            false_positives = m.trace[:, 0] * (1 - spec_val)
+            # Cost of confirmatory tests for false positives
+            fp_costs = false_positives * confirm_cost_val * f_mult * disc_arr
+            total_screen_cost += np.sum(fp_costs)
     
     # STEP 6: Calculate QALYs
     # Base QALY = cohort size × years × base utility (0.79 for diabetes)
@@ -788,13 +821,37 @@ screen_cost_unit = st.sidebar.number_input(
 annual_cost = screen_cost_unit * freq_mult
 st.sidebar.info(f"**Annualized Cost:** ₹{annual_cost:,.2f} per eligible person")
 
-# Intervention Effectiveness Slider
-eff_input = st.sidebar.slider(
-    "Effectiveness (Risk Reduction %)", 
-    0, 50, 25,
-    help="Percentage reduction in disease progression risk. 25% = screening reduces progression by 1/4"
+# Test Sensitivity Slider
+sens_input = st.sidebar.slider(
+    "Test Sensitivity (%)", 
+    0, 100, 80,
+    help="Percentage of true positives correctly identified by the test. 80% = test detects 80% of actual cases"
 )
-effectiveness = eff_input / 100.0  # Convert percentage to decimal (25% → 0.25)
+sensitivity = sens_input / 100.0  # Convert percentage to decimal (80% → 0.80)
+
+# Test Specificity Slider
+spec_input = st.sidebar.slider(
+    "Test Specificity (%)", 
+    0, 100, 90,
+    help="Percentage of true negatives correctly identified by the test. 90% = test correctly identifies 90% of healthy individuals"
+)
+specificity = spec_input / 100.0  # Convert percentage to decimal (90% → 0.90)
+
+# Treatment Efficacy Slider
+rx_eff_input = st.sidebar.slider(
+    "Treatment Efficacy (Risk Reduction %)", 
+    0, 100, 30,
+    help="Percentage reduction in disease progression risk when treatment is applied. 30% = treatment reduces progression by 30%"
+)
+rx_efficacy = rx_eff_input / 100.0  # Convert percentage to decimal (30% → 0.30)
+
+# Confirmatory Test Cost Input
+confirm_cost = st.sidebar.number_input(
+    "Confirmatory Test Cost (₹)", 
+    value=500, 
+    min_value=0,
+    help="Cost of confirmatory diagnostic test for false positives (e.g., detailed retinal exam, HbA1c confirmation)"
+)
 
 st.sidebar.divider()
 
@@ -847,14 +904,23 @@ with st.sidebar.expander("🔎 Sensitivity Analysis"):
             
             # 2. Randomize intervention parameters
             rnd_cost = screen_cost_unit * np.random.uniform(1 - sa_variability, 1 + sa_variability)
-            rnd_eff = np.clip(
-                effectiveness * np.random.uniform(1 - sa_variability, 1 + sa_variability),
-                0, 0.5  # Cap maximum effectiveness at 50%
+            rnd_rx_eff = np.clip(
+                rx_efficacy * np.random.uniform(1 - sa_variability, 1 + sa_variability),
+                0, 1.0  # Cap maximum treatment efficacy at 100%
             )
+            rnd_sens = np.clip(
+                sensitivity * np.random.uniform(1 - sa_variability, 1 + sa_variability),
+                0, 1.0  # Cap maximum sensitivity at 100%
+            )
+            rnd_spec = np.clip(
+                specificity * np.random.uniform(1 - sa_variability, 1 + sa_variability),
+                0, 1.0  # Cap maximum specificity at 100%
+            )
+            rnd_confirm_cost = confirm_cost * np.random.uniform(1 - sa_variability, 1 + sa_variability)
             
             # 3. Run both scenarios (counterfactual and intervention)
-            cf = run_ht_scenario(rnd_params, "None", 0.0, 0, 0, cohort_size, time_horizon, discount_rate)
-            interv = run_ht_scenario(rnd_params, target_disease, rnd_eff, rnd_cost, freq_mult, cohort_size, time_horizon, discount_rate)
+            cf = run_ht_scenario(rnd_params, "None", 0.0, 0.0, 1.0, 0, 0, 0, cohort_size, time_horizon, discount_rate)
+            interv = run_ht_scenario(rnd_params, target_disease, rnd_rx_eff, rnd_sens, rnd_spec, rnd_confirm_cost, rnd_cost, freq_mult, cohort_size, time_horizon, discount_rate)
             
             # 4. Store incremental results
             results.append({
@@ -881,7 +947,10 @@ if st.button("Run Analysis", type="primary"):
     res_cf = run_ht_scenario(
         BASE_PARAMS,        # Use base parameters
         "None",             # No intervention
-        0.0,                # Zero effectiveness
+        0.0,                # Zero treatment efficacy
+        0.0,                # Zero sensitivity
+        1.0,                # Perfect specificity (no false positives in counterfactual)
+        0,                  # Zero confirmatory test cost
         0,                  # Zero screening cost
         0,                  # Zero frequency
         cohort_size, 
@@ -892,7 +961,10 @@ if st.button("Run Analysis", type="primary"):
     res_int = run_ht_scenario(
         BASE_PARAMS,        # Use base parameters  
         target_disease,     # User-selected target
-        effectiveness,      # User-selected effectiveness
+        rx_efficacy,        # User-selected treatment efficacy
+        sensitivity,        # User-selected sensitivity
+        specificity,        # User-selected specificity
+        confirm_cost,       # User-selected confirmatory test cost
         screen_cost_unit,   # User-selected screening cost
         freq_mult,          # User-selected frequency
         cohort_size,
